@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { io, type Socket } from "socket.io-client";
 
 type Point = { x: number; y: number };
@@ -13,6 +13,7 @@ export function PongGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const state = useRef<GameState>(fresh());
   const keys = useRef(new Set<string>());
+  const touchMoves = useRef(new Set<string>());
   const sprite = useRef<HTMLImageElement | null>(null);
   const socket = useRef<Socket | null>(null);
   const roleRef = useRef<"local" | "host" | "guest">("local");
@@ -31,6 +32,25 @@ export function PongGame() {
     s.ball = { x: W / 2, y: H / 2 };
     s.velocity = { x: (toLeft ? -1 : 1) * (260 + Math.min(s.hits * 8, 170)), y: Math.random() * 180 - 90 };
     s.hits = 0;
+  }, []);
+
+  const setTouchMove = useCallback((side: "host" | "guest", action: "up" | "down", down: boolean) => {
+    const id = `${side}:${action}`;
+    if (down) {
+      if (touchMoves.current.has(id)) return;
+      touchMoves.current.add(id);
+    } else {
+      if (!touchMoves.current.delete(id)) return;
+    }
+    if (modeRef.current === "online" && roleRef.current === side) socket.current?.emit("pong:input", { action, down });
+  }, []);
+
+  const releaseTouchMoves = useCallback(() => {
+    for (const id of touchMoves.current) {
+      const [side, action] = id.split(":") as ["host" | "guest", "up" | "down"];
+      if (modeRef.current === "online" && roleRef.current === side) socket.current?.emit("pong:input", { action, down: false });
+    }
+    touchMoves.current.clear();
   }, []);
 
   const connect = useCallback(() => {
@@ -58,7 +78,7 @@ export function PongGame() {
     return client;
   }, []);
 
-  useEffect(() => () => { socket.current?.emit("pong:leave"); socket.current?.disconnect(); }, []);
+  useEffect(() => () => { releaseTouchMoves(); socket.current?.emit("pong:leave"); socket.current?.disconnect(); }, [releaseTouchMoves]);
   useEffect(() => {
     const image = new Image();
     image.src = "/pong-sprites-tech.png";
@@ -82,8 +102,12 @@ export function PongGame() {
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
-    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, []);
+    const release = () => { keys.current.clear(); releaseTouchMoves(); };
+    window.addEventListener("blur", release);
+    const onVisibilityChange = () => { if (document.hidden) release(); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); window.removeEventListener("blur", release); document.removeEventListener("visibilitychange", onVisibilityChange); };
+  }, [releaseTouchMoves]);
 
   useEffect(() => {
     const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
@@ -120,8 +144,8 @@ export function PongGame() {
       const dt = Math.min((now - last) / 1000, 0.032); last = now; elapsed += dt;
       const s = state.current;
       if (modeRef.current === "local" && !s.paused) {
-        const leftMove = (keys.current.has("w") ? -1 : 0) + (keys.current.has("s") ? 1 : 0);
-        const rightMove = (keys.current.has("ArrowUp") ? -1 : 0) + (keys.current.has("ArrowDown") ? 1 : 0);
+        const leftMove = (keys.current.has("w") || touchMoves.current.has("host:up") ? -1 : 0) + (keys.current.has("s") || touchMoves.current.has("host:down") ? 1 : 0);
+        const rightMove = (keys.current.has("ArrowUp") || touchMoves.current.has("guest:up") ? -1 : 0) + (keys.current.has("ArrowDown") || touchMoves.current.has("guest:down") ? 1 : 0);
         s.left = clamp(s.left + leftMove * SPEED * dt, 0, H - PADDLE_H);
         s.right = clamp(s.right + rightMove * SPEED * dt, 0, H - PADDLE_H);
         s.ball.x += s.velocity.x * dt; s.ball.y += s.velocity.y * dt;
@@ -176,7 +200,7 @@ export function PongGame() {
     socket.current?.emit("pong:start");
   };
   const local = () => {
-    socket.current?.emit("pong:leave"); keys.current.clear(); roleRef.current = "local"; modeRef.current = "local";
+    releaseTouchMoves(); socket.current?.emit("pong:leave"); keys.current.clear(); roleRef.current = "local"; modeRef.current = "local";
     setRole("local"); state.current = fresh(); setMode("local");
     setLobby({ phase: "setup", code: "", joinCode: "", notice: "Create a private room or enter a friend’s code." }); announce("FIRST TO 11");
   };
@@ -186,6 +210,14 @@ export function PongGame() {
     setHud({ left: 0, right: 0, message: "ONLINE LOBBY", storm: "READY" }); setMode("online");
   };
 
+  const controlProps = (side: "host" | "guest", action: "up" | "down") => ({
+    "aria-label": `${side === "host" ? "Teal" : "Brick"} paddle ${action}`,
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setTouchMove(side, action, true); },
+    onPointerUp: () => setTouchMove(side, action, false),
+    onPointerCancel: () => setTouchMove(side, action, false),
+    onLostPointerCapture: () => setTouchMove(side, action, false),
+  });
+
   return <><section className="game-shell">
     <div className="scoreboard"><div className="score"><strong>{hud.left}</strong><small>TEAL<br />W / S</small></div><span className="round-status">{hud.storm}<br />{hud.message}</span><div className="score score-right"><small>BRICK<br />↑ / ↓</small><strong>{hud.right}</strong></div></div>
     <div className="play-switch"><button className={mode === "local" ? "active" : ""} onClick={local}>LOCAL</button><button className={mode === "online" ? "active" : ""} onClick={online}>ONLINE</button></div>
@@ -194,7 +226,13 @@ export function PongGame() {
       <section className="room-panel"><span className="room-step">01 / HOST</span><h3>CREATE A ROOM</h3><p>Generate a private code, then send it to your opponent.</p>{role === "host" && lobby.code ? <div className="room-code"><span>YOUR ROOM CODE</span><output>{lobby.code}</output><button onClick={copyCode}>COPY CODE</button></div> : <button onClick={createRoom}>CREATE PRIVATE ROOM</button>}</section>
       <section className="room-panel"><span className="room-step">02 / GUEST</span><h3>JOIN A ROOM</h3><p>Enter the four-character code your friend sent you.</p><label><span>ROOM CODE</span><input aria-label="Four-character room code" autoComplete="off" maxLength={4} value={lobby.joinCode} onChange={(e) => setLobby((l) => ({ ...l, joinCode: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") }))} placeholder="ABCD" /></label><button disabled={lobby.joinCode.length !== 4} onClick={joinRoom}>JOIN ROOM</button></section>
       {role === "host" && lobby.phase === "ready" && <button className="start-button" onClick={start}>FRIEND CONNECTED: START MATCH ↗</button>}
-    </div> : <canvas className="game-canvas" ref={canvasRef} width={W} height={H} aria-label="Mangolian Pong game board" />}
-    <div className="game-bottom"><span className="control-hint">{mode === "local" ? "SHARE THE KEYBOARD · W / S + ↑ / ↓ · SPACE = PAUSE" : role === "guest" ? "YOU ARE BRICK · ↑ / ↓ TO PLAY" : "YOU ARE TEAL · W / S TO PLAY"}</span><button className="mode-button" onClick={local}>↻ NEW LOCAL MATCH</button></div>
+    </div> : <><canvas className="game-canvas" ref={canvasRef} width={W} height={H} aria-label="Mangolian Pong game board" />
+      <div className="mobile-controls" data-mode={mode} data-role={role} aria-label="Touch paddle controls">
+        <div className="paddle-controls paddle-controls--host"><span>TEAL</span><button {...controlProps("host", "up")}>▲<i>UP</i></button><button {...controlProps("host", "down")}>▼<i>DOWN</i></button></div>
+        {mode === "local" && <button className="touch-pause" onClick={() => { state.current.paused = !state.current.paused; }}>Ⅱ<span>PAUSE</span></button>}
+        <div className="paddle-controls paddle-controls--guest"><span>BRICK</span><button {...controlProps("guest", "up")}>▲<i>UP</i></button><button {...controlProps("guest", "down")}>▼<i>DOWN</i></button></div>
+      </div>
+    </>}
+    <div className="game-bottom"><span className="control-hint">{mode === "local" ? "KEYBOARD: W / S + ↑ / ↓ · MOBILE: HOLD THE PADDLE BUTTONS" : role === "guest" ? "YOU ARE BRICK · HOLD THE ON-SCREEN ARROWS OR USE ↑ / ↓" : "YOU ARE TEAL · HOLD THE ON-SCREEN ARROWS OR USE W / S"}</span><button className="mode-button" onClick={local}>↻ NEW LOCAL MATCH</button></div>
   </section><section className="game-notes"><p>LOCAL / TWO FRIENDS. ONE KEYBOARD.</p><p>ONLINE / CREATE A CODE. SHARE IT. PLAY.</p><p>FILM FRENZY / EVERY 12 SECONDS THE WIND BENDS THE RALLY.</p></section></>;
 }
