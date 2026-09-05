@@ -147,7 +147,9 @@ export function PongGame() {
     };
     animation = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(animation);
-  }, [announce, resetBall]);
+  // The online lobby temporarily removes the canvas. Re-run the renderer when
+  // the game surface returns so it never keeps drawing to the old local canvas.
+  }, [announce, resetBall, mode, lobby.phase]);
 
   const createRoom = () => {
     roleRef.current = "host"; setRole("host");
