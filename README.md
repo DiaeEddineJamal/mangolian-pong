@@ -1,7 +1,7 @@
 # Mangolian Pong
 
 A standalone Next.js Pong game with local multiplayer and private online rooms.
-The online mode shares the Lmogolyan Kart Socket.IO server and room-code flow.
+The online mode shares the Lmongolyan Kart Socket.IO server and room-code flow.
 
 ## Getting Started
 
